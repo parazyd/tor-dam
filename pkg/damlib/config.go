@@ -47,9 +47,6 @@ const ProxyAddr = "127.0.0.1:9050"
 // to be opened by the Tor Hidden Service. Format is "remote:local".
 const TorPortMap = "80:49371,13010:13010,13011:13011,5000:5000"
 
-// DirPort is the port where dam-dir will be listening.
-const DirPort = 49371
-
 // Testnet is flipped with a flag in dam-dir and represents if all new
 // nodes are initially marked valid or not.
 var Testnet = false

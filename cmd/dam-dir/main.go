@@ -21,20 +21,26 @@ package main
  */
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
+	"github.com/cretz/bine/tor"
 	lib "github.com/parazyd/tor-dam/pkg/damlib"
 )
 
-// ListenAddress controls where our HTTP API daemon is listening.
-const ListenAddress = "127.0.0.1:49371"
+var (
+	gen     = flag.Bool("gen", false, "Only (re)generate keypairs and exit cleanly")
+	testnet = flag.Bool("testnet", false, "Mark all new nodes valid initially")
+	ttl     = flag.Int64("ttl", 0, "Expiry time in minutes for nodes (0 means unlimited)")
+	redisrc = flag.String("redisrc", "/usr/local/share/tor-dam/redis.conf", "Path to redis.conf")
+)
 
 type nodeStruct struct {
 	Address   string
@@ -218,15 +224,35 @@ func pollNodeTTL(interval int64) {
 // other requests (yet).
 func handleElse(rw http.ResponseWriter, request *http.Request) {}
 
-func main() {
-	var wg sync.WaitGroup
-	var ttl int64
-	var redconf string
+func clientInit() error {
+	pub, priv, err := lib.GenEd25519()
+	if err != nil {
+		return err
+	}
+	if err := lib.SavePrivEd25519(lib.PrivKeyPath, priv); err != nil {
+		return err
+	}
+	if err := lib.SaveSeedEd25519(lib.SeedPath, priv.Seed()); err != nil {
+		return err
+	}
+	if err := os.Chmod(lib.PrivKeyPath, 0600); err != nil {
+		return err
+	}
+	if err := os.Chmod(lib.SeedPath, 0600); err != nil {
+		return err
+	}
+	onionaddr := lib.OnionFromPubkeyEd25519(pub)
+	if err := ioutil.WriteFile("hostname", onionaddr, 0600); err != nil {
+		return err
+	}
+	if *gen {
+		log.Println("Our hostname is:", string(onionaddr))
+		os.Exit(0)
+	}
+	return nil
+}
 
-	flag.BoolVar(&lib.Testnet, "t", false, "Mark all new nodes valid initially")
-	flag.Int64Var(&ttl, "ttl", 0, "Set expiry time in minutes (TTL) for nodes")
-	flag.StringVar(&redconf, "redconf", "/usr/local/share/tor-dam/redis.conf",
-		"Path to redis' redis.conf.")
+func main() {
 	flag.Parse()
 
 	// Chdir to our working directory.
@@ -237,34 +263,55 @@ func main() {
 	err := os.Chdir(lib.Workdir)
 	lib.CheckError(err)
 
+	if _, err = os.Stat(lib.PrivKeyPath); os.IsNotExist(err) || *gen {
+		err = clientInit()
+		lib.CheckError(err)
+	}
+
 	if _, err := lib.RedisCli.Ping().Result(); err != nil {
 		// We assume redis is not running. Start it up.
-		cmd, err := lib.StartRedis(redconf)
+		cmd, err := lib.StartRedis(*redisrc)
 		defer cmd.Process.Kill()
 		lib.CheckError(err)
 	}
 
-	if lib.Testnet {
+	if *testnet {
 		log.Println("Will mark all nodes valid by default.")
 	}
+
+	pk, err := lib.LoadEd25519KeyFromSeed(lib.SeedPath)
+	lib.CheckError(err)
+
+	log.Println("Starting and registering onion service. Please wait...")
+	t, err := tor.Start(nil, &tor.StartConf{DataDir: lib.Workdir})
+	lib.CheckError(err)
+	defer t.Close()
+
+	// Wait at most a few minutes to publish the service
+	listenCtx, listenCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer listenCancel()
+
+	// Create an onion service
+	onion, err := t.Listen(listenCtx, &tor.ListenConf{
+		LocalPort:   49371,
+		RemotePorts: []int{80},
+		Version3:    true,
+		Key:         pk,
+	})
+	lib.CheckError(err)
+	defer onion.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/announce", handlePost)
 	mux.HandleFunc("/", handleElse)
-	srv := &http.Server{
-		Addr:         ListenAddress,
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
-	wg.Add(1)
-	go srv.ListenAndServe()
-	log.Println("Listening on", ListenAddress)
 
-	if ttl > 0 {
-		log.Printf("Enabling TTL polling (%d minute expire time).\n", ttl)
-		go pollNodeTTL(ttl)
+	if *ttl > 0 {
+		log.Printf("Enabling TTL polling (%d minute expire time).\n", *ttl)
+		go pollNodeTTL(*ttl)
 	}
 
-	wg.Wait()
+	for {
+		log.Printf("Listening on http://%s.onion\n", onion.ID)
+		log.Fatal(http.Serve(onion, mux))
+	}
 }

@@ -21,7 +21,6 @@ package main
  */
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/rand"
@@ -32,7 +31,6 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -44,34 +42,6 @@ import (
 
 type msgStruct struct {
 	Secret string
-}
-
-func clientInit(gen bool) error {
-	pub, priv, err := lib.GenEd25519()
-	if err != nil {
-		return err
-	}
-	if err := lib.SavePrivEd25519(lib.PrivKeyPath, priv); err != nil {
-		return err
-	}
-	if err := lib.SaveSeedEd25519(lib.SeedPath, priv.Seed()); err != nil {
-		return err
-	}
-	if err := os.Chmod(lib.PrivKeyPath, 0600); err != nil {
-		return err
-	}
-	if err := os.Chmod(lib.SeedPath, 0600); err != nil {
-		return err
-	}
-	onionaddr := lib.OnionFromPubkeyEd25519(pub)
-	if err := ioutil.WriteFile("hostname", onionaddr, 0600); err != nil {
-		return err
-	}
-	if gen {
-		log.Println("Our hostname is:", string(onionaddr))
-		os.Exit(0)
-	}
-	return nil
 }
 
 func fetchNodeList(epLists []string, noremote bool) ([]string, error) {
@@ -250,41 +220,6 @@ func main() {
 		err = clientInit(gen)
 		lib.CheckError(err)
 	}
-
-	log.Println("Starting up the hidden service.")
-	cmd := exec.Command("damhs.py", "-k", lib.PrivKeyPath, "-p", lib.TorPortMap)
-	defer cmd.Process.Kill()
-	stdout, err := cmd.StdoutPipe()
-	lib.CheckError(err)
-
-	err = cmd.Start()
-	lib.CheckError(err)
-
-	scanner := bufio.NewScanner(stdout)
-	ok := false
-	go func() {
-		// If we do not manage to publish our descriptor, we shall exit.
-		t1 := time.Now().Unix()
-		for !(ok) {
-			t2 := time.Now().Unix()
-			if t2-t1 > 90 {
-				log.Fatalln("Too much time has passed for publishing descriptor.")
-			}
-			time.Sleep(1000 * time.Millisecond)
-		}
-	}()
-	for !(ok) {
-		scanner.Scan()
-		status := scanner.Text()
-		if status == "OK" {
-			log.Println("Hidden service is now running.")
-			ok = true
-		}
-	}
-
-	onionaddr, err := ioutil.ReadFile("hostname")
-	lib.CheckError(err)
-	log.Println("Our hostname is:", string(onionaddr))
 
 	for {
 		log.Println("Announcing to nodes...")

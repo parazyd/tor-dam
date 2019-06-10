@@ -49,7 +49,7 @@ func StartRedis(conf string) (*exec.Cmd, error) {
 		return cmd, err
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 	if _, err := RedisCli.Ping().Result(); err != nil {
 		return cmd, err
 	}

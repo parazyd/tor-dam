@@ -24,6 +24,7 @@ golang.org/x/crypto/ed25519
 golang.org/x/crypto/sha3
 golang.org/x/net/proxy
 github.com/go-redis/redis
+github.com/cretz/bine/tor
 ```
 
 #### Python 3
